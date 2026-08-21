@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           وقت بدء سجلات الأحداث المراد تحميلها (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   إضافة معلومات GeoIP (ASN، المدينة، الدولة) إلى عناوين IP المصدر
   -X, --remove-duplicate-records  إزالة سجلات الأحداث المكررة (default: disabled)
   -o, --output <FILENAME-PREFIX>  حفظ ملخص تسجيل الدخول في ملفي CSV (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           إخراج الطابع الزمني بتنسيق الوقت الأمريكي (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### إثراء معلومات GeoIP في أمر `logon-summary`
+
+عند تمرير `-G, --geo-ip` مع مسار مجلد يحتوي على قواعد بيانات MaxMind وهي `GeoLite2-ASN.mmdb` و`GeoLite2-Country.mmdb` و`GeoLite2-City.mmdb`، يتم البحث عن عنوان IP المصدر لكل صف وتُضاف الأعمدة `Source ASN` و`Source Country` و`Source City` إلى كلا ملفي CSV.
+لا يتسع جدول الطرفية إلا لعمود واحد منها، لذا يعرض `Source Country` (ويعود إلى عمود ASN عند كونه فارغًا، لأن القيمتين البديلتين `Local`/`Private` للعناوين غير القابلة للتوجيه تظهران هناك).
+
 ### أمثلة على أمر `logon-summary`
 
 * طباعة ملخص تسجيل الدخول: `hayabusa.exe logon-summary -f Security.evtx`
 * حفظ نتائج ملخص تسجيل الدخول: `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* إضافة معلومات GeoIP إلى عناوين IP المصدر: `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### لقطات شاشة لـ `logon-summary`
 

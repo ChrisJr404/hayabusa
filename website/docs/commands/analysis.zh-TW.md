@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           要載入的事件記錄開始時間 (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   為來源 IP 位址加上 GeoIP (ASN、城市、國家) 資訊
   -X, --remove-duplicate-records  移除重複的事件記錄 (default: disabled)
   -o, --output <FILENAME-PREFIX>  將登入摘要儲存至兩個 CSV 檔案 (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           以美國時間格式輸出時間戳記 (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### `logon-summary` GeoIP 資訊
+
+當 `-G, --geo-ip` 指向包含 MaxMind `GeoLite2-ASN.mmdb`、`GeoLite2-Country.mmdb` 與 `GeoLite2-City.mmdb` 資料庫的目錄時，每一列的來源 IP 位址都會被查詢，並在兩個 CSV 檔案中加入 `Source ASN`、`Source Country` 與 `Source City` 欄位。
+終端機表格只容得下其中一欄，因此顯示 `Source Country`（若為空則改用 ASN 欄位，因為無法路由的位址的 `Local`/`Private` 值會出現在 ASN 欄位）。
+
 ### `logon-summary` 命令範例
 
 * 印出登入摘要：`hayabusa.exe logon-summary -f Security.evtx`
 * 儲存登入摘要結果：`hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* 為來源 IP 位址加上 GeoIP 資訊：`hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### `logon-summary` 螢幕截圖
 

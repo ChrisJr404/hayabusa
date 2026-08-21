@@ -1,5 +1,11 @@
 # 変更点
 
+## x.x.x
+
+**改善:**
+
+- `logon-summary` コマンドに `-G, --geo-ip` オプションを追加した。集計された各ログオンの送信元IPアドレスに対して `Source ASN`、`Source Country`、`Source City` 列を追加する。 (#1920) (@fukusuket)
+
 ## 4.0.0 [2026/07/29] - Black Hat Arsenal USA Release
 
 **改善:**

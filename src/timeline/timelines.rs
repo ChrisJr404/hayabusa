@@ -470,7 +470,10 @@ impl Timeline {
         } else {
             ("First Logon", "Last Logon")
         };
-        let header = vec![
+        // With -G, the source IP address of every row is resolved through the MaxMind databases
+        // and three extra columns are appended.
+        let use_geo_ip = stored_static.geo_ip_search.is_some();
+        let mut header = vec![
             header_column.as_str(),
             first_label,
             last_label,
@@ -484,6 +487,9 @@ impl Timeline {
             "Source Computer",
             "Source IP Address",
         ];
+        if use_geo_ip {
+            header.extend(["Source ASN", "Source Country", "Source City"]);
+        }
         let target;
         if output.is_none() {
             let msg = format!("{} Logons:", make_ascii_titlecase(logon_res));
@@ -521,9 +527,10 @@ impl Timeline {
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS);
         // The terminal table only shows a subset of the columns (count, first/last time, event,
-        // target account, target computer, source computer, source IP); the CSV has all of them.
+        // target account, target computer, source computer, source IP, plus the source country
+        // with -G); the CSV has all of them.
         let header_ref = &header;
-        logins_stats_tb.set_header([
+        let mut terminal_header = vec![
             header_ref[0],
             header_ref[1],
             header_ref[2],
@@ -532,7 +539,11 @@ impl Timeline {
             header_ref[6],
             header_ref[10],
             header_ref[11],
-        ]);
+        ];
+        if use_geo_ip {
+            terminal_header.push(header_ref[13]);
+        }
+        logins_stats_tb.set_header(terminal_header);
         // Index into the per-user [successful, failed] count/first/last arrays.
         let result_index = match logon_res {
             "successful" => 0,
@@ -565,7 +576,26 @@ impl Timeline {
                 Some(timestamp) => utils::format_time(&timestamp, false, tfo).to_string(),
                 None => "-".to_string(),
             };
-            let record_data = vec![
+            // The lookup is per displayed row rather than per record, and GeoIPSearch caches
+            // each address, so a repeated source IP costs nothing. Rows whose source IP is not a
+            // resolvable address (e.g. the "-" placeholder for events without one) get "-".
+            let geo_fields: [String; 3] = match &stored_static.geo_ip_search {
+                Some(geo_ip_search) => {
+                    match geo_ip_search.convert_ip_to_geo(login_event.source_ip.as_str()) {
+                        Ok(geo_data) => {
+                            let mut geo_data = geo_data.split('🦅').map(str::to_string);
+                            [
+                                geo_data.next().unwrap_or_default(),
+                                geo_data.next().unwrap_or_default(),
+                                geo_data.next().unwrap_or_default(),
+                            ]
+                        }
+                        Err(_) => ["-".to_string(), "-".to_string(), "-".to_string()],
+                    }
+                }
+                None => Default::default(),
+            };
+            let mut record_data = vec![
                 vnum_str.as_str(),
                 first_str.as_str(),
                 last_str.as_str(),
@@ -579,13 +609,29 @@ impl Timeline {
                 login_event.source_computer.as_str(),
                 login_event.source_ip.as_str(),
             ];
+            if use_geo_ip {
+                record_data.extend(geo_fields.iter().map(String::as_str));
+            }
             if let Some(ref mut writer) = wtr {
                 writer.write_record(&record_data).ok();
             }
             let row = record_data;
-            logins_stats_tb.add_row([
+            let mut table_row = vec![
                 row[0], row[1], row[2], row[3], row[4], row[6], row[10], row[11],
-            ]);
+            ];
+            if use_geo_ip {
+                // The country is the only GeoIP column the terminal table has room for, so fall
+                // back to the ASN when it is empty. That is where convert_ip_to_geo puts the
+                // "Local"/"Private" placeholders for addresses it does not look up -- without the
+                // fallback a private source IP would show "-", indistinguishable from a row with
+                // no source IP at all. The CSV keeps all three columns as-is.
+                table_row.push(match (geo_fields[1].as_str(), geo_fields[0].as_str()) {
+                    ("" | "-", "" | "-") => "-",
+                    ("" | "-", asn) => asn,
+                    (country, _) => country,
+                });
+            }
+            logins_stats_tb.add_row(table_row);
         }
         // If there is no row data, display a message indicating no detections.
         if logins_stats_tb.row_iter().len() == 0 {
@@ -1018,6 +1064,7 @@ mod tests {
                     start_timeline: None,
                 },
                 remove_duplicate_detections: false,
+                geo_ip: None,
             }));
         dummy_stored_static.logon_summary_flag = true;
         let mut timeline = Timeline::default();
@@ -1379,6 +1426,7 @@ mod tests {
                     start_timeline: None,
                 },
                 remove_duplicate_detections: false,
+                geo_ip: None,
             }));
         dummy_stored_static.logon_summary_flag = true;
         let mut timeline = Timeline::default();
@@ -1499,5 +1547,188 @@ mod tests {
         // Delete the file after the test.
         assert!(remove_file(&out_test_tm_logon_stats_successful_csv).is_ok());
         assert!(remove_file(&out_test_tm_logon_stats_failed_csv).is_ok());
+    }
+
+    /// Test the -G (GeoIP) columns of the logon-summary CSV output: a routable address is
+    /// resolved through the MaxMind databases, a private address is reported as "Private", and a
+    /// record without a source IP falls back to "-".
+    #[test]
+    pub fn test_tm_logon_stats_dsp_msg_geo_ip() {
+        let output_tmp_dir = tempfile::tempdir().unwrap();
+        let out_prefix = output_tmp_dir.path().join("test_tm_logon_stats_geo_ip");
+        let out_successful_csv = output_tmp_dir
+            .path()
+            .join("test_tm_logon_stats_geo_ip-successful.csv");
+        let out_failed_csv = output_tmp_dir
+            .path()
+            .join("test_tm_logon_stats_geo_ip-failed.csv");
+        let mut dummy_stored_static =
+            create_dummy_stored_static(Action::LogonSummary(LogonSummaryOption {
+                input_args: InputOption {
+                    directory: None,
+                    filepath: Some(Path::new("./dummy.evtx").to_path_buf()),
+                    live_analysis: false,
+                    recover_records: false,
+                    time_offset: None,
+                },
+                common_options: CommonOptions {
+                    no_color: false,
+                    quiet: false,
+                    help: None,
+                },
+                detect_common_options: DetectCommonOption {
+                    json_input: false,
+                    validate_checksums: false,
+                    evtx_file_ext: None,
+                    thread_number: None,
+                    quiet_errors: false,
+                    config: Path::new("./rules/config").to_path_buf(),
+                    verbose: false,
+                    include_computer: None,
+                    exclude_computer: None,
+                },
+                time_format_options: TimeFormatOptions {
+                    european_time: false,
+                    iso_8601: false,
+                    rfc_2822: false,
+                    rfc_3339: false,
+                    us_military_time: false,
+                    us_time: false,
+                    utc: false,
+                },
+                output: Some(out_prefix.clone()),
+                clobber_opt: ClobberOption { clobber: false },
+                time_range: TimeRangeOption {
+                    end_timeline: None,
+                    start_timeline: None,
+                },
+                remove_duplicate_detections: false,
+                // Test databases from https://github.com/maxmind/MaxMind-DB/tree/main/test-data
+                geo_ip: Some(Path::new("test_files/mmdb").to_path_buf()),
+            }));
+        assert!(dummy_stored_static.geo_ip_search.is_some());
+        dummy_stored_static.logon_summary_flag = true;
+        let mut timeline = Timeline::default();
+
+        // A successful logon from a routable address that the test databases know about.
+        let global_ip_record_str = r#"{
+            "Event": {
+                "System": {
+                    "EventID": 4624,
+                    "Channel": "Security",
+                    "Computer":"HAYABUSA-DESKTOP",
+                    "TimeCreated_attributes": {
+                        "SystemTime": "2021-12-23T00:00:00.000Z"
+                    }
+                },
+                "EventData": {
+                    "WorkstationName": "HAYABUSA",
+                    "IpAddress": "2.125.160.216",
+                    "TargetUserName": "testuser",
+                    "LogonType": "3"
+                }
+            },
+            "Event_attributes": {"xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"}
+        }"#;
+        // A failed logon from a private address: reported as "Private" without a lookup.
+        let private_ip_record_str = r#"{
+            "Event": {
+                "System": {
+                    "EventID": 4625,
+                    "Channel": "Security",
+                    "Computer":"HAYABUSA-DESKTOP",
+                    "TimeCreated_attributes": {
+                        "SystemTime": "2022-12-23T00:00:00.000Z"
+                    }
+                },
+                "EventData": {
+                    "IpAddress": "192.168.100.200",
+                    "TargetUserName": "testuser",
+                    "LogonType": "3"
+                }
+            },
+            "Event_attributes": {"xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"}
+        }"#;
+        // A failed logon with no source IP field at all: the "-" placeholder is not an address.
+        let no_ip_record_str = r#"{
+            "Event": {
+                "System": {
+                    "EventID": 4625,
+                    "Channel": "Security",
+                    "Computer":"HAYABUSA-DESKTOP",
+                    "TimeCreated_attributes": {
+                        "SystemTime": "2022-12-23T00:00:00.000Z"
+                    }
+                },
+                "EventData": {
+                    "TargetUserName": "testuser2",
+                    "LogonType": "0"
+                }
+            },
+            "Event_attributes": {"xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"}
+        }"#;
+        let mut input_records = vec![];
+        for record_str in [
+            global_ip_record_str,
+            private_ip_record_str,
+            no_ip_record_str,
+        ] {
+            input_records.push(create_rec_info(
+                serde_json::from_str(record_str).unwrap(),
+                "testpath".to_string(),
+                &Nested::<String>::new(),
+                &false,
+                &false,
+                &dummy_stored_static.eventkey_alias,
+            ));
+        }
+        timeline
+            .stats
+            .logon_stats_start(&input_records, &dummy_stored_static);
+        timeline.tm_logon_stats_dsp_msg(&dummy_stored_static);
+
+        let tfo = &dummy_stored_static
+            .output_option
+            .as_ref()
+            .unwrap()
+            .time_format_options;
+        let mkdt = |date_str: &str| {
+            DateTime::<Utc>::from_naive_utc_and_offset(
+                NaiveDateTime::parse_from_str(date_str, "%Y-%m-%dT%H:%M:%S%.fZ").unwrap(),
+                Utc,
+            )
+        };
+        let success_t =
+            crate::detections::utils::format_time(&mkdt("2021-12-23T00:00:00.000Z"), false, tfo)
+                .to_string();
+        let failed_t =
+            crate::detections::utils::format_time(&mkdt("2022-12-23T00:00:00.000Z"), false, tfo)
+                .to_string();
+
+        // The test City/Country databases resolve 2.125.160.216, but the test ASN database has no
+        // entry for it, so the ASN column is empty.
+        let expect_success = format!(
+            "Successful,First Logon,Last Logon,Event,Target Account,Target Domain,Target Computer,Logon Type,Source Account,Source Domain,Source Computer,Source IP Address,Source ASN,Source Country,Source City\n\
+             1,{success_t},{success_t},Sec 4624,testuser,-,HAYABUSA-DESKTOP,3 - Network,-,-,HAYABUSA,2.125.160.216,,United Kingdom,Boxford\n"
+        );
+        match read_to_string(&out_successful_csv) {
+            Err(_) => panic!("Failed to open file."),
+            Ok(contents) => assert_eq!(contents, expect_success),
+        };
+
+        // The failed rows are ordered by count and then by the logon grouping key, so the
+        // private-address row (Target Account "testuser") comes before the no-IP one.
+        let expect_failed = format!(
+            "Failed,First Attempt,Last Attempt,Event,Target Account,Target Domain,Target Computer,Logon Type,Source Account,Source Domain,Source Computer,Source IP Address,Source ASN,Source Country,Source City\n\
+             1,{failed_t},{failed_t},Sec 4625,testuser,-,HAYABUSA-DESKTOP,3 - Network,-,-,-,192.168.100.200,Private,-,-\n\
+             1,{failed_t},{failed_t},Sec 4625,testuser2,-,HAYABUSA-DESKTOP,0 - System,-,-,-,-,-,-,-\n"
+        );
+        match read_to_string(&out_failed_csv) {
+            Err(_) => panic!("Failed to open file."),
+            Ok(contents) => assert_eq!(contents, expect_failed),
+        };
+
+        assert!(remove_file(&out_successful_csv).is_ok());
+        assert!(remove_file(&out_failed_csv).is_ok());
     }
 }

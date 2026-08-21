@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           Yüklenecek olay günlüklerinin başlangıç zamanı (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   Kaynak IP adreslerine GeoIP (ASN, şehir, ülke) bilgisi ekle
   -X, --remove-duplicate-records  Yinelenen olay kayıtlarını kaldır (default: disabled)
   -o, --output <FILENAME-PREFIX>  Oturum açma özetini iki CSV dosyasına kaydet (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           Zaman damgasını ABD saat biçiminde çıktı ver (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### `logon-summary` GeoIP zenginleştirmesi
+
+`-G, --geo-ip` seçeneği MaxMind'in `GeoLite2-ASN.mmdb`, `GeoLite2-Country.mmdb` ve `GeoLite2-City.mmdb` veritabanlarını içeren bir dizini gösterdiğinde, her satırın kaynak IP adresi sorgulanır ve her iki CSV dosyasına `Source ASN`, `Source Country` ve `Source City` sütunları eklenir.
+Terminal tablosunda bunlardan yalnızca birine yer vardır; bu nedenle `Source Country` gösterilir (boş olduğunda ASN sütununa geri dönülür, çünkü yönlendirilemeyen adreslerin `Local`/`Private` değerleri orada yer alır).
+
 ### `logon-summary` komut örnekleri
 
 * Oturum açma özetini yazdırın: `hayabusa.exe logon-summary -f Security.evtx`
 * Oturum açma özeti sonuçlarını kaydedin: `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* Kaynak IP adreslerine GeoIP bilgisi ekleyin: `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### `logon-summary` ekran görüntüleri
 

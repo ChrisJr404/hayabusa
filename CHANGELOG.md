@@ -1,5 +1,11 @@
 # Changes
 
+## x.x.x
+
+**Enhancements:**
+
+- Added the `-G, --geo-ip` option to the `logon-summary` command, which appends `Source ASN`, `Source Country` and `Source City` columns for the source IP address of each summarized logon. (#1920) (@fukusuket)
+
 ## 4.0.0 [2026/07/29] - Black Hat Arsenal USA Release
 
 **Enhancements:**

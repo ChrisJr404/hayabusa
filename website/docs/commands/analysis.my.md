@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           Start time of the event logs to load (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   source IP address များတွင် GeoIP (ASN, မြို့, နိုင်ငံ) အချက်အလက် ထည့်ရန်
   -X, --remove-duplicate-records  ထပ်နေသော event record များကို ဖယ်ရှားရန် (default: disabled)
   -o, --output <FILENAME-PREFIX>  Save the logon summary to two CSV files (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           Output timestamp in US time format (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### `logon-summary` GeoIP အချက်အလက် ဖြည့်စွက်ခြင်း
+
+MaxMind ၏ `GeoLite2-ASN.mmdb`, `GeoLite2-Country.mmdb` နှင့် `GeoLite2-City.mmdb` database များ ရှိသော directory ကို `-G, --geo-ip` ဖြင့် သတ်မှတ်ပါက row တစ်ခုစီ၏ source IP address ကို ရှာဖွေပြီး CSV ဖိုင်နှစ်ခုလုံးတွင် `Source ASN`, `Source Country` နှင့် `Source City` column များ ထပ်ဖြည့်ပေးပါသည်။
+Terminal table တွင် တစ်ခုတည်းသာ နေရာရှိသဖြင့် `Source Country` ကို ပြသပါသည် (ဗလာဖြစ်ပါက ASN column သို့ ပြန်သုံးပါသည်။ routing မလုပ်နိုင်သော address များ၏ `Local`/`Private` တန်ဖိုးများသည် ASN column တွင် ရှိသောကြောင့် ဖြစ်သည်)။
+
 ### `logon-summary` command ဥပမာများ
 
 * logon summary ကို print ထုတ်ရန်: `hayabusa.exe logon-summary -f Security.evtx`
 * logon summary ရလဒ်များကို သိမ်းဆည်းရန်: `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* source IP address များတွင် GeoIP အချက်အလက် ထည့်ရန်: `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### `logon-summary` screenshots
 
