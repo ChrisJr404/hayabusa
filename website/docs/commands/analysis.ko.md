@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           Start time of the event logs to load (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   출발지 IP 주소에 GeoIP (ASN, 도시, 국가) 정보 추가
   -X, --remove-duplicate-records  중복 이벤트 레코드 제거 (default: disabled)
   -o, --output <FILENAME-PREFIX>  Save the logon summary to two CSV files (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           Output timestamp in US time format (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### `logon-summary` GeoIP 정보 추가
+
+MaxMind의 `GeoLite2-ASN.mmdb`, `GeoLite2-Country.mmdb`, `GeoLite2-City.mmdb` 데이터베이스가 있는 디렉터리를 `-G, --geo-ip`로 지정하면 각 행의 출발지 IP 주소를 조회하여 두 CSV 파일에 `Source ASN`, `Source Country`, `Source City` 열이 추가됩니다.
+터미널 테이블에는 이 중 하나만 표시할 공간이 있으므로 `Source Country`를 표시합니다(비어 있으면 ASN 열로 대체됩니다. 라우팅할 수 없는 주소의 `Local`/`Private` 값이 ASN 열에 들어가기 때문입니다).
+
 ### `logon-summary` 명령어 예시
 
 * 로그온 요약 출력: `hayabusa.exe logon-summary -f Security.evtx`
 * 로그온 요약 결과 저장: `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* 출발지 IP 주소에 GeoIP 정보 추가: `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### `logon-summary` 스크린샷
 

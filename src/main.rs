@@ -1308,7 +1308,7 @@ Any hostnames added to the critical_systems.txt file will have all alerts above 
             write_color_buffer(
                 &BufferWriter::stdout(ColorChoice::Always),
                 Some(Color::Rgb(0, 255, 0)),
-                &format!("- {:<25}", &format!("{}:", profile[0])),
+                &format!("- {:<25}", format!("{}:", profile[0])),
                 false,
             )
             .ok();
