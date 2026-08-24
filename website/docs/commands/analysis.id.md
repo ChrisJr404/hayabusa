@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           Start time of the event logs to load (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   Tambahkan info GeoIP (ASN, kota, negara) ke alamat IP sumber
   -X, --remove-duplicate-records  Hapus record event duplikat (default: disabled)
   -o, --output <FILENAME-PREFIX>  Save the logon summary to two CSV files (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           Output timestamp in US time format (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### Pengayaan GeoIP `logon-summary`
+
+Jika `-G, --geo-ip` diarahkan ke direktori yang berisi basis data MaxMind `GeoLite2-ASN.mmdb`, `GeoLite2-Country.mmdb`, dan `GeoLite2-City.mmdb`, alamat IP sumber pada setiap baris akan dicari dan kolom `Source ASN`, `Source Country`, dan `Source City` ditambahkan ke kedua file CSV.
+Tabel terminal hanya memiliki ruang untuk salah satunya, sehingga menampilkan `Source Country` (kembali ke kolom ASN jika kosong, karena di situlah nilai `Local`/`Private` untuk alamat non-routable muncul).
+
 ### Contoh perintah `logon-summary`
 
 * Cetak ringkasan logon: `hayabusa.exe logon-summary -f Security.evtx`
 * Simpan hasil ringkasan logon: `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* Tambahkan info GeoIP ke alamat IP sumber: `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### Tangkapan layar `logon-summary`
 

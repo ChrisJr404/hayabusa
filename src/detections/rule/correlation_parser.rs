@@ -162,19 +162,18 @@ fn get_group_by_from_yaml(yaml: &Yaml) -> Result<Option<String>, Box<dyn Error>>
 /// TimeFrameInfo::parse_tframe in count.rs, but returns an Err for an unknown unit suffix
 /// instead of logging it.
 fn parse_tframe(value: String) -> Result<TimeFrameInfo, Box<dyn Error>> {
-    let time_unit;
     let mut target_val = value.as_str();
-    if target_val.ends_with('s') {
-        time_unit = "s";
+    let time_unit = if target_val.ends_with('s') {
+        "s"
     } else if target_val.ends_with('m') {
-        time_unit = "m";
+        "m"
     } else if target_val.ends_with('h') {
-        time_unit = "h";
+        "h"
     } else if target_val.ends_with('d') {
-        time_unit = "d";
+        "d"
     } else {
         return Err("Invalid time frame".into());
-    }
+    };
     if !time_unit.is_empty() {
         target_val = &value[..value.len() - 1];
     }

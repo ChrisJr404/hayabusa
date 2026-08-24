@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           เวลาเริ่มต้นของบันทึกเหตุการณ์ที่จะโหลด (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   เพิ่มข้อมูล GeoIP (ASN, เมือง, ประเทศ) ให้กับที่อยู่ IP ต้นทาง
   -X, --remove-duplicate-records  ลบเรคคอร์ดเหตุการณ์ที่ซ้ำกัน (ค่าเริ่มต้น: ปิดใช้งาน)
   -o, --output <FILENAME-PREFIX>  บันทึกสรุปการล็อกออนลงในไฟล์ CSV สองไฟล์ (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           แสดงเวลาในรูปแบบเวลาสหรัฐฯ (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### การเพิ่มข้อมูล GeoIP ของ `logon-summary`
+
+เมื่อระบุ `-G, --geo-ip` ให้ชี้ไปยังไดเรกทอรีที่มีฐานข้อมูล `GeoLite2-ASN.mmdb`, `GeoLite2-Country.mmdb` และ `GeoLite2-City.mmdb` ของ MaxMind ระบบจะค้นหาที่อยู่ IP ต้นทางของแต่ละแถว และเพิ่มคอลัมน์ `Source ASN`, `Source Country` และ `Source City` ลงในไฟล์ CSV ทั้งสองไฟล์
+ตารางบนเทอร์มินัลมีพื้นที่พอสำหรับคอลัมน์เดียวเท่านั้น จึงแสดง `Source Country` (หากว่างจะย้อนกลับไปใช้คอลัมน์ ASN เนื่องจากค่า `Local`/`Private` ของที่อยู่ที่ไม่สามารถกำหนดเส้นทางได้จะอยู่ในคอลัมน์ ASN)
+
 ### ตัวอย่างคำสั่ง `logon-summary`
 
 * พิมพ์สรุปการล็อกออน: `hayabusa.exe logon-summary -f Security.evtx`
 * บันทึกผลลัพธ์สรุปการล็อกออน: `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* เพิ่มข้อมูล GeoIP ให้กับที่อยู่ IP ต้นทาง: `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### ภาพหน้าจอ `logon-summary`
 

@@ -377,6 +377,7 @@ Filtering:
       --timeline-start <DATE>           Start time of the event logs to load (ex: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   Ajouter les informations GeoIP (ASN, ville, pays) aux adresses IP source
   -X, --remove-duplicate-records  Supprimer les enregistrements d'événements en double (default: disabled)
   -o, --output <FILENAME-PREFIX>  Save the logon summary to two CSV files (ex: -o logon-summary)
 
@@ -395,10 +396,16 @@ Time Format:
       --us-time           Output timestamp in US time format (ex: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### Enrichissement GeoIP de `logon-summary`
+
+Lorsque `-G, --geo-ip` pointe vers un répertoire contenant les bases de données MaxMind `GeoLite2-ASN.mmdb`, `GeoLite2-Country.mmdb` et `GeoLite2-City.mmdb`, l'adresse IP source de chaque ligne est résolue et les colonnes `Source ASN`, `Source Country` et `Source City` sont ajoutées aux deux fichiers CSV.
+Le tableau du terminal n'a de place que pour l'une d'entre elles : il affiche donc `Source Country` (avec un repli sur la colonne ASN lorsqu'elle est vide, car c'est là qu'apparaissent les valeurs `Local`/`Private` des adresses non routables).
+
 ### Exemples de la commande `logon-summary`
 
 * Afficher le résumé des connexions : `hayabusa.exe logon-summary -f Security.evtx`
 * Enregistrer les résultats du résumé des connexions : `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* Ajouter les informations GeoIP aux adresses IP source : `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### Captures d'écran de `logon-summary`
 

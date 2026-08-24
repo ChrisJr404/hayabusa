@@ -380,6 +380,7 @@ Filtering:
       --timeline-start <DATE>           解析対象とするイベントログの開始時刻 (例: "2020-02-22 00:00:00 +09:00")
 
 Output:
+  -G, --geo-ip <MAXMIND-DB-DIR>   送信元IPアドレスにGeoIP (ASN、市、国) 情報を追加する
   -X, --remove-duplicate-records  重複したイベントレコードを削除する (デフォルト: 無効)
   -o, --output <FILENAME-PREFIX>  ログオンサマリをCSV形式で２つのファイルに保存する (例: -o logon-summary)
 
@@ -398,10 +399,16 @@ Time Format:
       --us-time           アメリカ形式で日付と時刻を出力する (例: 02-22-2022 10:00:00.123 PM -06:00)
 ```
 
+### `logon-summary`のGeoIP情報の付与
+
+MaxMindの`GeoLite2-ASN.mmdb`、`GeoLite2-Country.mmdb`、`GeoLite2-City.mmdb`が置かれたディレクトリを`-G, --geo-ip`で指定すると、各行の送信元IPアドレスが検索され、2つのCSVファイルに`Source ASN`、`Source Country`、`Source City`列が追加されます。
+画面出力のテーブルは列幅の都合で`Source Country`のみを表示します(空の場合はASN列にフォールバックします。ルーティング対象外のアドレスの`Local`/`Private`はASN列に入るためです)。
+
 ### `logon-summary`コマンドの使用例
 
 * ログオンサマリの出力: `hayabusa.exe logon-summary -f Security.evtx`
 * ログオンサマリ結果を保存する: `hayabusa.exe logon-summary -d ../logs -o logon-summary.csv`
+* 送信元IPアドレスにGeoIP情報を付与する: `hayabusa.exe logon-summary -d ../logs -G /usr/local/share/GeoIP -o logon-summary.csv`
 
 ### `logon-summary`のスクリーンショット
 
