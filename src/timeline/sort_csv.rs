@@ -3,7 +3,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone};
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
 use hashbrown::HashSet;
 
@@ -33,24 +33,31 @@ const NAIVE_FORMATS: &[&str] = &[
 
 const DATE_ONLY_FORMATS: &[&str] = &["%Y-%m-%d", "%m-%d-%Y", "%d-%m-%Y", "%a, %e %b %Y"];
 
+/// Turn a UTC-anchored timestamp into a comparable nanosecond key. Unlike `timestamp_nanos_opt`,
+/// which is `None` for dates outside roughly 1677-2262, this covers the full range chrono can
+/// represent, so an old event timestamp does not flip the whole file to a lexical fallback.
+fn sort_key<Tz: TimeZone>(dt: DateTime<Tz>) -> i128 {
+    dt.timestamp() as i128 * 1_000_000_000 + i128::from(dt.timestamp_subsec_nanos())
+}
+
 /// Parse a Hayabusa timestamp cell into a comparable nanosecond value. Offset-aware timestamps are
 /// normalized to UTC; offset-less and date-only ones are taken at face value. Returns `None` when
 /// none of the known formats match, which flips the whole sort to a lexical fallback.
-fn parse_timestamp(value: &str) -> Option<i64> {
+fn parse_timestamp(value: &str) -> Option<i128> {
     let value = value.trim();
     for fmt in OFFSET_FORMATS {
         if let Ok(parsed) = DateTime::parse_from_str(value, fmt) {
-            return parsed.timestamp_nanos_opt();
+            return Some(sort_key(parsed));
         }
     }
     for fmt in NAIVE_FORMATS {
         if let Ok(parsed) = NaiveDateTime::parse_from_str(value, fmt) {
-            return parsed.and_utc().timestamp_nanos_opt();
+            return Some(sort_key(parsed.and_utc()));
         }
     }
     for fmt in DATE_ONLY_FORMATS {
         if let Ok(date) = NaiveDate::parse_from_str(value, fmt) {
-            return date.and_hms_opt(0, 0, 0)?.and_utc().timestamp_nanos_opt();
+            return Some(sort_key(date.and_hms_opt(0, 0, 0)?.and_utc()));
         }
     }
     None
@@ -183,7 +190,7 @@ pub fn sort_csv(opt: &SortCsvOption) {
     // Sort by timestamp, then by the full row so the ordering is a stable total order (identical
     // timestamps come out the same on every run). If any row's timestamp is in a format we don't
     // recognize, fall back to a lexical sort on the raw timestamp string.
-    let parsed: Vec<Option<i64>> = rows
+    let parsed: Vec<Option<i128>> = rows
         .iter()
         .map(|row| row.get(timestamp_idx).and_then(|ts| parse_timestamp(ts)))
         .collect();
@@ -304,5 +311,14 @@ mod tests {
         let earlier = parse_timestamp("2021-12-13 09:00:00.000 +09:00").unwrap();
         let later = parse_timestamp("2021-12-13 09:05:00.000 +09:00").unwrap();
         assert!(earlier < later);
+    }
+
+    #[test]
+    fn timestamps_before_the_nanosecond_epoch_still_sort() {
+        // Dates before ~1677 overflow chrono's `timestamp_nanos_opt`; the sort key must still
+        // cover them so a single old row does not flip the whole file to a lexical fallback.
+        let ancient = parse_timestamp("1601-01-01").unwrap();
+        let modern = parse_timestamp("2021-12-13").unwrap();
+        assert!(ancient < modern);
     }
 }
