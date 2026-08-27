@@ -322,6 +322,14 @@ impl StoredStatic {
                     "GeoLite2-City.mmdb",
                 ],
             ),
+            Some(Action::LogonSummary(opt)) => GeoIPSearch::check_exist_geo_ip_files(
+                &opt.geo_ip,
+                vec![
+                    "GeoLite2-ASN.mmdb",
+                    "GeoLite2-Country.mmdb",
+                    "GeoLite2-City.mmdb",
+                ],
+            ),
             _ => Ok(None),
         };
         if let Err(err_msg) = geo_ip_db_result {
@@ -1448,6 +1456,16 @@ pub struct PivotKeywordOption {
 pub struct LogonSummaryOption {
     #[clap(flatten)]
     pub input_args: InputOption,
+
+    /// Add GeoIP (ASN, city, country) info to source IP addresses
+    #[arg(
+        help_heading = Some("Output"),
+        short = 'G',
+        long = "geo-ip",
+        value_name = "MAXMIND-DB-DIR",
+        display_order = 70
+    )]
+    pub geo_ip: Option<PathBuf>,
 
     /// Save the logon summary to two CSV files (ex: -o logon-summary)
     #[arg(help_heading = Some("Output"), short = 'o', long, value_name = "FILENAME-PREFIX", display_order = 410)]
