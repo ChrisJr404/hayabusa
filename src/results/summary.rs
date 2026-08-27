@@ -2,7 +2,7 @@ use std::cmp::{self, min};
 use std::io::Write;
 use std::str::FromStr;
 
-use chrono::TimeZone;
+use chrono::{Local, TimeZone};
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
@@ -27,33 +27,31 @@ use crate::level::{_get_output_color, LEVEL, create_output_color_map};
 use crate::options::htmlreport::{self, RESULTS_SUMMARY_SECTION};
 
 use super::html_stock::_output_html_computer_by_mitre_attck;
-use super::{Colors, OutputWriter, ResultOutputState, get_histogram_timestamp, html_escape_value};
+use super::{
+    Colors, OutputWriter, ResultOutputState, get_histogram_marker_timestamps, html_escape_value,
+};
 
 /// Folds a batch of detections into `result_state`: records the detection timestamps and the
 /// IDs of detected records, and (unless no-summary is set) updates the per-level counts by
 /// date, computer, and rule, plus the rule author statistics used by the results summary.
 ///
-/// `display_tz` is the timezone the detection frequency timeline is drawn in; callers pass
-/// `&Local`. As on [`get_histogram_timestamp`] it is a parameter rather than `Local` so the
-/// collected timestamps can be asserted against a known offset regardless of the timezone the
-/// test runner happens to sit in.
-pub(crate) fn calc_statistic_info<Tz: TimeZone>(
+/// The collected timestamps are raw UTC epoch seconds. Only the axis markers of the detection
+/// frequency timeline are drawn in the display timezone, and they are shifted where they are
+/// rendered; see [`get_histogram_marker_timestamps`].
+pub(crate) fn calc_statistic_info(
     detect_infos: &[DetectInfo],
     duplicate_indices: &HashSet<usize>,
     result_state: &mut ResultOutputState,
     stored_static: &StoredStatic,
-    display_tz: &Tz,
 ) {
     let output_option = stored_static.output_option.as_ref().unwrap();
     for (i, detect_info) in detect_infos.iter().enumerate() {
         if duplicate_indices.contains(&i) {
             continue;
         }
-        result_state.timestamps.push(get_histogram_timestamp(
-            &output_option.time_format_options,
-            &detect_info.detected_time,
-            display_tz,
-        ));
+        result_state
+            .timestamps
+            .push(detect_info.detected_time.timestamp());
         match &detect_info.agg_result {
             None => {
                 result_state
@@ -224,6 +222,7 @@ pub fn output_result_summary(
             terminal_width,
             3,
             &output_option.time_format_options,
+            &Local,
         );
         println!();
     }
@@ -626,14 +625,17 @@ fn _get_table_color(
 /// Prints the detection frequency timeline (a sparkline histogram of detection timestamps with
 /// time markers) to stdout. Requires at least 5 events to render.
 ///
-/// `timestamps` must already be adjusted by [`get_histogram_timestamp`]: the marker builder
-/// formats each value as UTC, so raw UTC epoch seconds make the axis disagree with the rest of
-/// the summary. The markers carry no offset, so `time_format` names the timezone in the title.
-fn _print_timeline_hist(
+/// `timestamps` are the raw UTC epoch seconds collected by [`calc_statistic_info`]. The
+/// sparkline is binned from them as they are, so its bins stay a faithful picture of the real
+/// instants; only the axis markers, which the marker builder formats as UTC without a timezone,
+/// are shifted into `display_tz` -- see [`get_histogram_marker_timestamps`]. The markers carry no
+/// offset either way, so `time_format` names the timezone in the title.
+fn _print_timeline_hist<Tz: TimeZone>(
     timestamps: &[i64],
     length: usize,
     side_margin_size: usize,
     time_format: &TimeFormatOptions,
+    display_tz: &Tz,
 ) {
     if timestamps.is_empty() {
         return;
@@ -682,7 +684,8 @@ fn _print_timeline_hist(
     };
     let marker_num = min(timestamp_marker_max, 18);
 
-    let (header_raw, footer_raw) = build_time_markers(timestamps, marker_num, inner_width);
+    let marker_timestamps = get_histogram_marker_timestamps(time_format, timestamps, display_tz);
+    let (header_raw, footer_raw) = build_time_markers(&marker_timestamps, marker_num, inner_width);
     let sparkline = build_sparkline(timestamps, inner_width, 5_usize);
     for header_str in header_raw.lines() {
         writeln!(
@@ -1187,7 +1190,7 @@ fn extract_author_name(author: &str) -> Nested<String> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, FixedOffset, Utc};
+    use chrono::{DateTime, Utc};
     use hashbrown::HashSet;
 
     use super::{calc_statistic_info, truncate_chars};
@@ -1214,15 +1217,12 @@ mod tests {
     }
 
     #[test]
-    fn calc_statistic_info_shifts_histogram_timestamps_into_the_output_timezone() {
-        // Collecting the raw UTC epoch here left the -T axis reading UTC while every other
-        // timestamp in the same output read local time. What is pinned is the wiring -- that the
-        // shift is applied at all, with the display timezone and the caller's time format. An
-        // explicit offset rather than `Local`: handing in `Local` would make both assertions
-        // below collapse into the unshifted UTC epoch on a UTC CI runner, so the bug this test
-        // covers could be reintroduced with CI still green. The arithmetic itself is covered by
-        // the `get_histogram_timestamp` tests in `results::tests`.
-        let display_tz = FixedOffset::east_opt(9 * 3600).unwrap();
+    fn calc_statistic_info_collects_raw_utc_histogram_timestamps() {
+        // The sparkline of the -T timeline bins these by value, so they have to stay the real UTC
+        // instants regardless of the output timezone: folding the display offset in here (as the
+        // first cut of the -T timezone fix did) lets a DST fall-back merge two distinct hours into
+        // one bin. The display offset belongs to the axis markers alone and is applied where they
+        // are rendered -- see the `get_histogram_marker_timestamps` tests in `results::tests`.
         let detected_time = DateTime::parse_from_rfc3339("2021-12-23T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -1231,36 +1231,23 @@ mod tests {
             ..Default::default()
         }];
 
-        let mut local_state = ResultOutputState::default();
-        calc_statistic_info(
-            &detect_infos,
-            &HashSet::new(),
-            &mut local_state,
-            &stored_static_with(TimeFormatOptions::default()),
-            &display_tz,
-        );
-        let marker = DateTime::from_timestamp(local_state.timestamps[0], 0)
-            .expect("collected timestamp is out of range");
-        assert_eq!(
-            marker.naive_utc(),
-            detected_time.with_timezone(&display_tz).naive_local(),
-            "histogram marker does not read as wall-clock time in the display timezone"
-        );
-
-        // -U prints the rest of the output in UTC, so the axis must stay UTC as well -- even
-        // though a non-UTC display timezone is handed in.
-        let mut utc_state = ResultOutputState::default();
-        calc_statistic_info(
-            &detect_infos,
-            &HashSet::new(),
-            &mut utc_state,
-            &stored_static_with(TimeFormatOptions {
+        // Both the local and the -U output modes: neither may touch the collected value.
+        for time_format_options in [
+            TimeFormatOptions::default(),
+            TimeFormatOptions {
                 utc: true,
                 ..Default::default()
-            }),
-            &display_tz,
-        );
-        assert_eq!(utc_state.timestamps, vec![detected_time.timestamp()]);
+            },
+        ] {
+            let mut result_state = ResultOutputState::default();
+            calc_statistic_info(
+                &detect_infos,
+                &HashSet::new(),
+                &mut result_state,
+                &stored_static_with(time_format_options),
+            );
+            assert_eq!(result_state.timestamps, vec![detected_time.timestamp()]);
+        }
     }
 
     #[test]

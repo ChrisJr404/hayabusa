@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::error::Error;
 use std::fs::File;
@@ -5,7 +6,7 @@ use std::io::{self, BufWriter};
 use std::process;
 
 use ::csv::{QuoteStyle, Writer, WriterBuilder};
-use chrono::{DateTime, Local, Offset, TimeZone, Utc};
+use chrono::{DateTime, Offset, TimeZone, Utc};
 use compact_str::CompactString;
 use hashbrown::{HashMap, HashSet};
 use strum::IntoEnumIterator;
@@ -326,7 +327,6 @@ fn output_results_inner(
         &duplicate_indices,
         result_state,
         stored_static,
-        &Local,
     );
     output_writer.disp_wtr_buf.clear();
 
@@ -432,9 +432,10 @@ pub fn get_duplicate_indices(detect_infos: &mut [DetectInfo]) -> HashSet<usize> 
     filtered_detect_infos
 }
 
-/// Converts the given datetime to the epoch seconds fed to the detection frequency histogram.
+/// Converts one collected detection timestamp to the epoch seconds behind an axis marker of the
+/// detection frequency timeline.
 ///
-/// krapslog formats each axis marker as UTC and prints it without a timezone, so the offset of
+/// krapslog formats each marker as UTC and prints it without a timezone, so the offset of
 /// `display_tz` has to be folded in here or the markers disagree with every other timestamp in
 /// the output. Taking it at the instant being converted rather than at a fixed reference point
 /// keeps events on either side of a DST transition correct. Callers pass `&Local`; the timezone
@@ -443,31 +444,62 @@ pub fn get_duplicate_indices(detect_infos: &mut [DetectInfo]) -> HashSet<usize> 
 /// Shifting each value by its own offset means the series is no longer monotonic across a DST
 /// fall-back — two markers inside the ambiguous hour can appear out of order. That is inherent
 /// to displaying local time on a series sorted by UTC instant, and is cosmetic.
-fn get_histogram_timestamp<Tz: TimeZone>(
+fn get_histogram_marker_timestamp<Tz: TimeZone>(
     time_format: &TimeFormatOptions,
-    time: &DateTime<Utc>,
+    timestamp: i64,
     display_tz: &Tz,
 ) -> i64 {
     if time_format.is_utc_output() {
-        time.timestamp()
-    } else {
-        // with_timezone preserves the instant, so the offset is the only shift applied.
-        let offset = time
-            .with_timezone(display_tz)
-            .offset()
-            .fix()
-            .local_minus_utc();
-        time.timestamp() + offset as i64
+        return timestamp;
     }
+    // Outside chrono's representable range there is no offset to look up, and the marker builder
+    // could not format the value either. Pass it through rather than guess.
+    let Some(time) = DateTime::from_timestamp(timestamp, 0) else {
+        return timestamp;
+    };
+    // with_timezone preserves the instant, so the offset is the only shift applied.
+    let offset = time
+        .with_timezone(display_tz)
+        .offset()
+        .fix()
+        .local_minus_utc();
+    timestamp + offset as i64
+}
+
+/// The axis-marker view of the detection timestamps, which are collected as raw UTC epochs.
+///
+/// Only the marker builder may be handed the shifted copy: it picks its markers by *index*, so a
+/// per-event shift moves no marker and changes nothing but the printed labels. The sparkline
+/// instead bins by value between the smallest and largest timestamp, so it has to keep seeing the
+/// real instants — shifted values let a DST fall-back fold two distinct hours onto the same
+/// repeated wall-clock hour and merge their counts, while a spring-forward stretches the drawn
+/// duration by the hour that never happened.
+///
+/// Borrowed unchanged in the UTC output modes, where there is no shift to apply.
+fn get_histogram_marker_timestamps<'a, Tz: TimeZone>(
+    time_format: &TimeFormatOptions,
+    timestamps: &'a [i64],
+    display_tz: &Tz,
+) -> Cow<'a, [i64]> {
+    if time_format.is_utc_output() {
+        return Cow::Borrowed(timestamps);
+    }
+    Cow::Owned(
+        timestamps
+            .iter()
+            .map(|timestamp| get_histogram_marker_timestamp(time_format, *timestamp, display_tz))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::fs::{read_to_string, remove_file};
     use std::path::Path;
 
     use chrono::NaiveDateTime;
-    use chrono::{DateTime, FixedOffset, Local, TimeZone, Utc};
+    use chrono::{DateTime, FixedOffset, Local, MappedLocalTime, NaiveDate, TimeZone, Utc};
     use compact_str::CompactString;
     use hashbrown::HashMap;
     use serde_json::Value;
@@ -493,7 +525,8 @@ mod tests {
     use crate::results::close_unterminated_quote;
     use crate::results::format_time;
     use crate::results::get_duplicate_indices;
-    use crate::results::get_histogram_timestamp;
+    use crate::results::get_histogram_marker_timestamp;
+    use crate::results::get_histogram_marker_timestamps;
     use crate::results::html_escape_value;
     use crate::results::init_writer;
     use crate::results::json_scalar;
@@ -501,8 +534,59 @@ mod tests {
     use crate::results::output_results_inner;
     use crate::results::sort_detect_info;
 
+    /// A timezone with one known DST transition: UTC+1 before 2021-03-28T01:00:00Z (the European
+    /// spring-forward) and UTC+2 from then on. Pinning both offsets is what lets the "offset taken
+    /// at the event" assertions below bite on a UTC CI runner, where `Local` has no transition to
+    /// get wrong.
+    ///
+    /// `with_timezone` only ever asks for the offset of a UTC instant; the local-side methods are
+    /// here to satisfy the trait and treat their argument as UTC as well.
+    #[derive(Clone, Copy)]
+    struct TestDstZone;
+
+    /// 2021-03-28T01:00:00Z, as epoch seconds.
+    const TEST_DST_TRANSITION: i64 = 1_616_893_200;
+
+    impl TestDstZone {
+        fn offset_at(naive: &NaiveDateTime) -> FixedOffset {
+            let hours = if naive.and_utc().timestamp() < TEST_DST_TRANSITION {
+                1
+            } else {
+                2
+            };
+            FixedOffset::east_opt(hours * 3600).unwrap()
+        }
+    }
+
+    impl TimeZone for TestDstZone {
+        type Offset = FixedOffset;
+
+        fn from_offset(_offset: &FixedOffset) -> Self {
+            TestDstZone
+        }
+
+        fn offset_from_local_date(&self, local: &NaiveDate) -> MappedLocalTime<FixedOffset> {
+            MappedLocalTime::Single(Self::offset_at(&local.and_hms_opt(0, 0, 0).unwrap()))
+        }
+
+        fn offset_from_local_datetime(
+            &self,
+            local: &NaiveDateTime,
+        ) -> MappedLocalTime<FixedOffset> {
+            MappedLocalTime::Single(Self::offset_at(local))
+        }
+
+        fn offset_from_utc_date(&self, utc: &NaiveDate) -> FixedOffset {
+            Self::offset_at(&utc.and_hms_opt(0, 0, 0).unwrap())
+        }
+
+        fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> FixedOffset {
+            Self::offset_at(utc)
+        }
+    }
+
     #[test]
-    fn test_get_histogram_timestamp_applies_the_display_offset() {
+    fn test_get_histogram_marker_timestamp_applies_the_display_offset() {
         // The value handed to krapslog has to read back as wall-clock time in the display zone.
         // Explicit offsets rather than `Local`, so the assertion still bites on a UTC CI runner.
         let local_format = TimeFormatOptions::default();
@@ -512,7 +596,7 @@ mod tests {
         for offset_hours in [9, 0, -7] {
             let display_tz = FixedOffset::east_opt(offset_hours * 3600).unwrap();
             let marker = DateTime::from_timestamp(
-                get_histogram_timestamp(&local_format, &time, &display_tz),
+                get_histogram_marker_timestamp(&local_format, time.timestamp(), &display_tz),
                 0,
             )
             .expect("shifted timestamp is out of range");
@@ -525,28 +609,33 @@ mod tests {
     }
 
     #[test]
-    fn test_get_histogram_timestamp_takes_the_offset_at_the_event() {
+    fn test_get_histogram_marker_timestamp_takes_the_offset_at_the_event() {
         // Taking the offset at a fixed reference point such as the Unix epoch gets one of a winter
-        // and a summer instant wrong. Only bites when the test machine is in a DST zone, hence the
-        // comparison against chrono's own local conversion rather than a hard-coded offset.
+        // and a summer instant wrong. `TestDstZone` pins the offset on either side of a known
+        // transition, so -- unlike a comparison against `Local` -- this also fails on a UTC runner.
         let local_format = TimeFormatOptions::default();
-        for iso in ["2021-12-23T00:00:00Z", "2021-07-23T00:00:00Z"] {
+        for (iso, expected_wall_clock) in [
+            ("2021-02-23T00:00:00Z", "2021-02-23T01:00:00"),
+            ("2021-07-23T00:00:00Z", "2021-07-23T02:00:00"),
+        ] {
             let time = DateTime::parse_from_rfc3339(iso)
                 .unwrap()
                 .with_timezone(&Utc);
-            let marker =
-                DateTime::from_timestamp(get_histogram_timestamp(&local_format, &time, &Local), 0)
-                    .expect("shifted timestamp is out of range");
+            let marker = DateTime::from_timestamp(
+                get_histogram_marker_timestamp(&local_format, time.timestamp(), &TestDstZone),
+                0,
+            )
+            .expect("shifted timestamp is out of range");
             assert_eq!(
                 marker.naive_utc(),
-                time.with_timezone(&Local).naive_local(),
-                "histogram marker for {iso} does not read as local time"
+                NaiveDateTime::parse_from_str(expected_wall_clock, "%Y-%m-%dT%H:%M:%S").unwrap(),
+                "histogram marker for {iso} does not read as wall-clock time in the display zone"
             );
         }
     }
 
     #[test]
-    fn test_get_histogram_timestamp_passes_through_utc_output_modes() {
+    fn test_get_histogram_marker_timestamp_passes_through_utc_output_modes() {
         // -U and --ISO-8601 print the rest of the output in UTC, so the axis must stay UTC too --
         // even though a non-UTC display zone is handed in.
         let display_tz = FixedOffset::east_opt(9 * 3600).unwrap();
@@ -564,10 +653,55 @@ mod tests {
             },
         ] {
             assert_eq!(
-                get_histogram_timestamp(&format, &time, &display_tz),
+                get_histogram_marker_timestamp(&format, time.timestamp(), &display_tz),
                 time.timestamp()
             );
         }
+    }
+
+    #[test]
+    fn test_get_histogram_marker_timestamps_shifts_only_the_marker_copy() {
+        // The sparkline bins by value between the smallest and largest timestamp, so it is handed
+        // the collected UTC epochs untouched and only this copy is shifted. Binning the shifted
+        // values instead distorts the histogram across a DST transition: below, the shifted series
+        // spans two hours where only one really elapsed, and a fall-back would go the other way and
+        // merge two distinct hours into the repeated wall-clock one.
+        let local_format = TimeFormatOptions::default();
+        let collected = [
+            DateTime::parse_from_rfc3339("2021-03-28T00:30:00Z")
+                .unwrap()
+                .timestamp(),
+            DateTime::parse_from_rfc3339("2021-03-28T01:30:00Z")
+                .unwrap()
+                .timestamp(),
+        ];
+
+        let markers = get_histogram_marker_timestamps(&local_format, &collected, &TestDstZone);
+        assert_eq!(
+            markers[0] - collected[0],
+            3600,
+            "marker before the transition is not shifted by UTC+1"
+        );
+        assert_eq!(
+            markers[1] - collected[1],
+            7200,
+            "marker after the transition is not shifted by UTC+2"
+        );
+        assert_eq!(collected[1] - collected[0], 3600, "the real elapsed hour");
+        assert_eq!(markers[1] - markers[0], 7200, "the shifted, distorted span");
+
+        // Nothing to shift in the UTC output modes, so the collected values are handed straight
+        // through instead of being copied.
+        let utc_markers = get_histogram_marker_timestamps(
+            &TimeFormatOptions {
+                utc: true,
+                ..Default::default()
+            },
+            &collected,
+            &TestDstZone,
+        );
+        assert!(matches!(utc_markers, Cow::Borrowed(_)));
+        assert_eq!(utc_markers.as_ref(), &collected[..]);
     }
 
     #[test]
