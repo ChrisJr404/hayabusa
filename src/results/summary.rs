@@ -2,6 +2,7 @@ use std::cmp::{self, min};
 use std::io::Write;
 use std::str::FromStr;
 
+use chrono::{Local, TimeZone};
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
@@ -16,7 +17,7 @@ use termcolor::{BufferWriter, Color, ColorChoice, ColorSpec, WriteColor};
 use terminal_size::Width;
 use terminal_size::terminal_size;
 
-use crate::detections::configs::{CURRENT_EXE_PATH, StoredStatic};
+use crate::detections::configs::{CURRENT_EXE_PATH, StoredStatic, TimeFormatOptions};
 use crate::detections::message::DetectInfo;
 use crate::detections::utils::{
     self, check_setting_path, format_time, get_writable_color, output_and_data_stack_for_html,
@@ -26,11 +27,17 @@ use crate::level::{_get_output_color, LEVEL, create_output_color_map};
 use crate::options::htmlreport::{self, RESULTS_SUMMARY_SECTION};
 
 use super::html_stock::_output_html_computer_by_mitre_attck;
-use super::{Colors, OutputWriter, ResultOutputState, html_escape_value};
+use super::{
+    Colors, OutputWriter, ResultOutputState, get_histogram_marker_timestamps, html_escape_value,
+};
 
 /// Folds a batch of detections into `result_state`: records the detection timestamps and the
 /// IDs of detected records, and (unless no-summary is set) updates the per-level counts by
 /// date, computer, and rule, plus the rule author statistics used by the results summary.
+///
+/// The collected timestamps are raw UTC epoch seconds. Only the axis markers of the detection
+/// frequency timeline are drawn in the display timezone, and they are shifted where they are
+/// rendered; see [`get_histogram_marker_timestamps`].
 pub(crate) fn calc_statistic_info(
     detect_infos: &[DetectInfo],
     duplicate_indices: &HashSet<usize>,
@@ -210,7 +217,13 @@ pub fn output_result_summary(
 
     println!();
     if output_option.visualize_timeline {
-        _print_timeline_hist(&result_state.timestamps, terminal_width, 3);
+        _print_timeline_hist(
+            &result_state.timestamps,
+            terminal_width,
+            3,
+            &output_option.time_format_options,
+            &Local,
+        );
         println!();
     }
 
@@ -611,7 +624,19 @@ fn _get_table_color(
 }
 /// Prints the detection frequency timeline (a sparkline histogram of detection timestamps with
 /// time markers) to stdout. Requires at least 5 events to render.
-fn _print_timeline_hist(timestamps: &[i64], length: usize, side_margin_size: usize) {
+///
+/// `timestamps` are the raw UTC epoch seconds collected by [`calc_statistic_info`]. The
+/// sparkline is binned from them as they are, so its bins stay a faithful picture of the real
+/// instants; only the axis markers, which the marker builder formats as UTC without a timezone,
+/// are shifted into `display_tz` -- see [`get_histogram_marker_timestamps`]. The markers carry no
+/// offset either way, so `time_format` names the timezone in the title.
+fn _print_timeline_hist<Tz: TimeZone>(
+    timestamps: &[i64],
+    length: usize,
+    side_margin_size: usize,
+    time_format: &TimeFormatOptions,
+    display_tz: &Tz,
+) {
     if timestamps.is_empty() {
         return;
     }
@@ -630,7 +655,16 @@ fn _print_timeline_hist(timestamps: &[i64], length: usize, side_margin_size: usi
         return;
     }
 
-    let title = "Detection Frequency Timeline";
+    // "local time" rather than a concrete offset: a dataset can span a DST transition and so have
+    // no single offset.
+    let title = format!(
+        "Detection Frequency Timeline ({})",
+        if time_format.is_utc_output() {
+            "UTC"
+        } else {
+            "local time"
+        }
+    );
     // On a very narrow terminal there is not enough room to draw the histogram. Skip it rather
     // than underflow the `usize` width math below — an underflow would make `" ".repeat(...)`
     // attempt an enormous allocation and pass a huge width to the sparkline/marker builders.
@@ -650,7 +684,8 @@ fn _print_timeline_hist(timestamps: &[i64], length: usize, side_margin_size: usi
     };
     let marker_num = min(timestamp_marker_max, 18);
 
-    let (header_raw, footer_raw) = build_time_markers(timestamps, marker_num, inner_width);
+    let marker_timestamps = get_histogram_marker_timestamps(time_format, timestamps, display_tz);
+    let (header_raw, footer_raw) = build_time_markers(&marker_timestamps, marker_num, inner_width);
     let sparkline = build_sparkline(timestamps, inner_width, 5_usize);
     for header_str in header_raw.lines() {
         writeln!(
@@ -1155,7 +1190,65 @@ fn extract_author_name(author: &str) -> Nested<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_chars;
+    use chrono::{DateTime, Utc};
+    use hashbrown::HashSet;
+
+    use super::{calc_statistic_info, truncate_chars};
+    use crate::detections::configs::{
+        Action, Config, DfirTimelineOption, OutputOption, StoredStatic, TimeFormatOptions,
+    };
+    use crate::detections::message::DetectInfo;
+    use crate::results::ResultOutputState;
+
+    fn stored_static_with(time_format_options: TimeFormatOptions) -> StoredStatic {
+        StoredStatic::create_static_data(Config {
+            action: Some(Action::DfirTimeline(DfirTimelineOption {
+                output_options: OutputOption {
+                    min_level: "informational".to_string(),
+                    no_summary: true,
+                    no_wizard: true,
+                    time_format_options,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })),
+            debug: false,
+        })
+    }
+
+    #[test]
+    fn calc_statistic_info_collects_raw_utc_histogram_timestamps() {
+        // The sparkline of the -T timeline bins these by value, so they have to stay the real UTC
+        // instants regardless of the output timezone: folding the display offset in here (as the
+        // first cut of the -T timezone fix did) lets a DST fall-back merge two distinct hours into
+        // one bin. The display offset belongs to the axis markers alone and is applied where they
+        // are rendered -- see the `get_histogram_marker_timestamps` tests in `results::tests`.
+        let detected_time = DateTime::parse_from_rfc3339("2021-12-23T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let detect_infos = [DetectInfo {
+            detected_time,
+            ..Default::default()
+        }];
+
+        // Both the local and the -U output modes: neither may touch the collected value.
+        for time_format_options in [
+            TimeFormatOptions::default(),
+            TimeFormatOptions {
+                utc: true,
+                ..Default::default()
+            },
+        ] {
+            let mut result_state = ResultOutputState::default();
+            calc_statistic_info(
+                &detect_infos,
+                &HashSet::new(),
+                &mut result_state,
+                &stored_static_with(time_format_options),
+            );
+            assert_eq!(result_state.timestamps, vec![detected_time.timestamp()]);
+        }
+    }
 
     #[test]
     fn truncate_chars_never_splits_a_multibyte_char() {
